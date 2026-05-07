@@ -56,26 +56,44 @@ async function findChromium(): Promise<BinaryEntry | null> {
   return null;
 }
 
-// Pull display/session env vars from the systemd user environment so that
-// Chromium can connect to the display even when launched from a stripped env
-// (e.g. Claude Desktop).
+// Build the display/session environment needed to launch a GUI app from a
+// stripped context (e.g. when the MCP server is spawned by Claude Desktop).
+// systemctl --user itself needs DBUS_SESSION_BUS_ADDRESS, so we resolve the
+// socket paths from the UID directly instead of calling it first.
 async function getSessionEnv(): Promise<NodeJS.ProcessEnv> {
   const base = { ...process.env };
-  const needed = ["DISPLAY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR"];
-  if (needed.every((k) => base[k])) return base; // already have everything
+  const uid = process.getuid?.() ?? 1000;
+  const runtimeDir = base.XDG_RUNTIME_DIR ?? `/run/user/${uid}`;
 
-  try {
-    const { stdout } = await execAsync("systemctl --user show-environment 2>/dev/null");
-    for (const line of stdout.split("\n")) {
-      const eq = line.indexOf("=");
-      if (eq === -1) continue;
-      const key = line.slice(0, eq);
-      const val = line.slice(eq + 1);
-      if (!base[key]) base[key] = val;
+  if (!base.XDG_RUNTIME_DIR) base.XDG_RUNTIME_DIR = runtimeDir;
+  if (!base.DBUS_SESSION_BUS_ADDRESS)
+    base.DBUS_SESSION_BUS_ADDRESS = `unix:path=${runtimeDir}/bus`;
+
+  // Derive WAYLAND_DISPLAY / DISPLAY from systemctl now that we have D-Bus
+  if (!base.WAYLAND_DISPLAY || !base.DISPLAY) {
+    try {
+      const env = { ...base };
+      const { stdout } = await execAsync("systemctl --user show-environment", { env });
+      for (const line of stdout.split("\n")) {
+        const eq = line.indexOf("=");
+        if (eq === -1) continue;
+        const key = line.slice(0, eq);
+        const val = line.slice(eq + 1);
+        if (!base[key]) base[key] = val;
+      }
+    } catch {
+      // Fall back: scan /run/user/<uid> for a wayland socket
+      if (!base.WAYLAND_DISPLAY) {
+        try {
+          const { stdout } = await execAsync(`ls "${runtimeDir}"/wayland-? 2>/dev/null | head -1`);
+          const socket = stdout.trim().split("/").pop();
+          if (socket) base.WAYLAND_DISPLAY = socket;
+        } catch {}
+      }
+      if (!base.DISPLAY) base.DISPLAY = ":0";
     }
-  } catch {
-    // non-systemd system — proceed with whatever we have
   }
+
   return base;
 }
 
