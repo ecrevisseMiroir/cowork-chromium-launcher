@@ -56,14 +56,39 @@ async function findChromium(): Promise<BinaryEntry | null> {
   return null;
 }
 
-function spawnChromium(binary: BinaryEntry, args: string[]) {
+// Pull display/session env vars from the systemd user environment so that
+// Chromium can connect to the display even when launched from a stripped env
+// (e.g. Claude Desktop).
+async function getSessionEnv(): Promise<NodeJS.ProcessEnv> {
+  const base = { ...process.env };
+  const needed = ["DISPLAY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR"];
+  if (needed.every((k) => base[k])) return base; // already have everything
+
+  try {
+    const { stdout } = await execAsync("systemctl --user show-environment 2>/dev/null");
+    for (const line of stdout.split("\n")) {
+      const eq = line.indexOf("=");
+      if (eq === -1) continue;
+      const key = line.slice(0, eq);
+      const val = line.slice(eq + 1);
+      if (!base[key]) base[key] = val;
+    }
+  } catch {
+    // non-systemd system — proceed with whatever we have
+  }
+  return base;
+}
+
+async function spawnChromium(binary: BinaryEntry, args: string[]) {
+  const env = await getSessionEnv();
   if (binary.type === "flatpak") {
     return spawn("flatpak", ["run", binary.appId, ...args], {
       detached: true,
       stdio: "ignore",
+      env,
     });
   }
-  return spawn(binary.path, args, { detached: true, stdio: "ignore" });
+  return spawn(binary.path, args, { detached: true, stdio: "ignore", env });
 }
 
 function binaryLabel(binary: BinaryEntry): string {
@@ -128,7 +153,7 @@ server.tool(
     if (url) args.push(url);
 
     try {
-      const child = spawnChromium(binary, args);
+      const child = await spawnChromium(binary, args);
       child.unref();
 
       return {
@@ -178,7 +203,7 @@ server.tool(
     }
 
     try {
-      const child = spawnChromium(binary, [url]);
+      const child = await spawnChromium(binary, [url]);
       child.unref();
       return {
         content: [{ type: "text", text: `✅ Opening ${url} in Chromium.` }],
