@@ -63,35 +63,34 @@ async function findChromium(): Promise<BinaryEntry | null> {
 async function getSessionEnv(): Promise<NodeJS.ProcessEnv> {
   const base = { ...process.env };
   const uid = process.getuid?.() ?? 1000;
-  const runtimeDir = base.XDG_RUNTIME_DIR ?? `/run/user/${uid}`;
+  const runtimeDir = `/run/user/${uid}`;
 
-  if (!base.XDG_RUNTIME_DIR) base.XDG_RUNTIME_DIR = runtimeDir;
-  if (!base.DBUS_SESSION_BUS_ADDRESS)
-    base.DBUS_SESSION_BUS_ADDRESS = `unix:path=${runtimeDir}/bus`;
+  // Always force-set these — Claude Desktop passes DBUS_SESSION_BUS_ADDRESS="disabled:"
+  // to MCP servers which breaks Chromium's portal bus. Override unconditionally.
+  base.XDG_RUNTIME_DIR = runtimeDir;
+  base.DBUS_SESSION_BUS_ADDRESS = `unix:path=${runtimeDir}/bus`;
 
-  // Derive WAYLAND_DISPLAY / DISPLAY from systemctl now that we have D-Bus
-  if (!base.WAYLAND_DISPLAY || !base.DISPLAY) {
-    try {
-      const env = { ...base };
-      const { stdout } = await execAsync("systemctl --user show-environment", { env });
-      for (const line of stdout.split("\n")) {
-        const eq = line.indexOf("=");
-        if (eq === -1) continue;
-        const key = line.slice(0, eq);
-        const val = line.slice(eq + 1);
-        if (!base[key]) base[key] = val;
+  // Derive WAYLAND_DISPLAY / DISPLAY via systemctl (now has a working D-Bus path)
+  try {
+    const { stdout } = await execAsync("systemctl --user show-environment", { env: base });
+    for (const line of stdout.split("\n")) {
+      const eq = line.indexOf("=");
+      if (eq === -1) continue;
+      const key = line.slice(0, eq);
+      const val = line.slice(eq + 1);
+      // Override display vars always; leave other vars intact if already set
+      if (["DISPLAY", "WAYLAND_DISPLAY"].includes(key) || !base[key]) {
+        base[key] = val;
       }
-    } catch {
-      // Fall back: scan /run/user/<uid> for a wayland socket
-      if (!base.WAYLAND_DISPLAY) {
-        try {
-          const { stdout } = await execAsync(`ls "${runtimeDir}"/wayland-? 2>/dev/null | head -1`);
-          const socket = stdout.trim().split("/").pop();
-          if (socket) base.WAYLAND_DISPLAY = socket;
-        } catch {}
-      }
-      if (!base.DISPLAY) base.DISPLAY = ":0";
     }
+  } catch {
+    // Fall back: scan /run/user/<uid> for a wayland socket
+    try {
+      const { stdout } = await execAsync(`ls "${runtimeDir}"/wayland-? 2>/dev/null | head -1`);
+      const socket = stdout.trim().split("/").pop();
+      if (socket) base.WAYLAND_DISPLAY = socket;
+    } catch {}
+    if (!base.DISPLAY) base.DISPLAY = ":0";
   }
 
   return base;
