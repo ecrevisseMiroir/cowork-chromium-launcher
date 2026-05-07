@@ -1,0 +1,34 @@
+{
+  "manifest_version": "0.3",
+  "name": "chromium-mcp",
+  "display_name": "Chromium Launcher",
+  "version": "1.0.0",
+  "description": "Launch and control Chromium on your local machine.",
+  "author": {
+    "name": "Mouad"
+  },
+  "license": "ISC",
+  "keywords": ["chromium", "browser", "launch"],
+  "server": {
+    "type": "node",
+    "entry_point": "dist/index.js",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/dist/index.js"]
+    }
+  },
+  "tools": [
+    {
+      "name": "launch_chromium",
+      "description": "Launch Chromium or Google Chrome, optionally opening a URL."
+    },
+    {
+      "name": "open_url",
+      "description": "Open a URL in Chromium (launches the browser if not running)."
+    },
+    {
+      "name": "detect_chromium",
+      "description": "Detect whether Chromium or Chrome is installed and return the binary path."
+    }
+  ]
+}
