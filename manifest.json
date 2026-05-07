@@ -8,6 +8,13 @@
     "name": "Mouad"
   },
   "icon": "Chromium_Logo.svg.png",
+  "icons": [
+    { "src": "icons/icon-16.png",  "size": "16x16"   },
+    { "src": "icons/icon-32.png",  "size": "32x32"   },
+    { "src": "icons/icon-48.png",  "size": "48x48"   },
+    { "src": "icons/icon-128.png", "size": "128x128" },
+    { "src": "icons/icon-256.png", "size": "256x256" }
+  ],
   "license": "ISC",
   "keywords": ["chromium", "browser", "launch"],
   "server": {
