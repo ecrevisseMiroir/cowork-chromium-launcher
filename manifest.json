@@ -7,6 +7,7 @@
   "author": {
     "name": "Mouad"
   },
+  "icon": "Chromium_Logo.svg.png",
   "license": "ISC",
   "keywords": ["chromium", "browser", "launch"],
   "server": {
