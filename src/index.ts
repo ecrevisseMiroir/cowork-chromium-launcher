@@ -97,16 +97,33 @@ async function getSessionEnv(): Promise<NodeJS.ProcessEnv> {
   return base;
 }
 
-async function spawnChromium(binary: BinaryEntry, args: string[]) {
+async function spawnChromium(
+  binary: BinaryEntry,
+  args: string[]
+): Promise<{ pid: number | undefined; output: string }> {
   const env = await getSessionEnv();
-  if (binary.type === "flatpak") {
-    return spawn("flatpak", ["run", binary.appId, ...args], {
-      detached: true,
-      stdio: "ignore",
-      env,
+  const [cmd, cmdArgs] =
+    binary.type === "flatpak"
+      ? ["flatpak", ["run", binary.appId, ...args]]
+      : [binary.path, args];
+
+  return new Promise((resolve) => {
+    const child = spawn(cmd, cmdArgs, { detached: true, stdio: ["ignore", "pipe", "pipe"], env });
+    let output = "";
+    child.stdout?.on("data", (d) => { output += d.toString(); });
+    child.stderr?.on("data", (d) => { output += d.toString(); });
+
+    // Give it 3s to fail fast; if still running, consider it successfully launched
+    const timer = setTimeout(() => {
+      child.unref();
+      resolve({ pid: child.pid, output });
+    }, 3000);
+
+    child.on("exit", (code, signal) => {
+      clearTimeout(timer);
+      resolve({ pid: child.pid, output: output + `\n[exited code=${code} signal=${signal}]` });
     });
-  }
-  return spawn(binary.path, args, { detached: true, stdio: "ignore", env });
+  });
 }
 
 function binaryLabel(binary: BinaryEntry): string {
@@ -171,17 +188,18 @@ server.tool(
     if (url) args.push(url);
 
     try {
-      const child = await spawnChromium(binary, args);
-      child.unref();
+      const { pid, output } = await spawnChromium(binary, args);
+      const trimmed = output.trim();
 
       return {
         content: [
           {
             type: "text",
             text:
-              `✅ Launched Chromium (pid ${child.pid}).\n` +
+              `✅ Launched Chromium (pid ${pid}).\n` +
               `Binary : ${binaryLabel(binary)}\n` +
-              `Args   : ${args.join(" ") || "(none)"}`,
+              `Args   : ${args.join(" ") || "(none)"}` +
+              (trimmed ? `\n\n${trimmed}` : ""),
           },
         ],
       };
@@ -221,10 +239,13 @@ server.tool(
     }
 
     try {
-      const child = await spawnChromium(binary, [url]);
-      child.unref();
+      const { pid, output } = await spawnChromium(binary, [url]);
+      const trimmed = output.trim();
       return {
-        content: [{ type: "text", text: `✅ Opening ${url} in Chromium.` }],
+        content: [{
+          type: "text",
+          text: `✅ Opening ${url} in Chromium (pid ${pid}).` + (trimmed ? `\n\n${trimmed}` : ""),
+        }],
       };
     } catch (err) {
       return {
