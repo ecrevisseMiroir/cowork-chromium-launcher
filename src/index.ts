@@ -131,6 +131,35 @@ function binaryLabel(binary: BinaryEntry): string {
     : binary.path;
 }
 
+// ── URL Filter ───────────────────────────────────────────────────────────────
+
+function globMatch(pattern: string, url: string): boolean {
+  // Escape regex special chars except * which becomes .*
+  const regex = new RegExp("^" + pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*") + "$");
+  return regex.test(url);
+}
+
+function checkUrl(url: string): { allowed: boolean; reason: string } {
+  const mode = (process.env.URL_FILTER_MODE ?? "blocklist").trim().toLowerCase();
+  const raw = (process.env.URL_PATTERNS ?? "").trim();
+  const patterns = raw ? raw.split(",").map(p => p.trim()).filter(Boolean) : [];
+
+  if (patterns.length === 0) return { allowed: true, reason: "" };
+
+  const matched = patterns.some(p => globMatch(p, url));
+
+  if (mode === "allowlist") {
+    return matched
+      ? { allowed: true, reason: "" }
+      : { allowed: false, reason: `URL is not in the allowlist. Patterns: ${patterns.join(", ")}` };
+  } else {
+    // blocklist
+    return matched
+      ? { allowed: false, reason: `URL is blocked. Patterns: ${patterns.join(", ")}` }
+      : { allowed: true, reason: "" };
+  }
+}
+
 // ── MCP Server ───────────────────────────────────────────────────────────────
 const server = new McpServer({
   name: "chromium-mcp",
@@ -166,6 +195,10 @@ server.tool(
       ),
   },
   async ({ url, incognito, new_window, extra_args }) => {
+    if (url) {
+      const { allowed, reason } = checkUrl(url);
+      if (!allowed) return { content: [{ type: "text", text: `❌ Blocked: ${reason}` }], isError: true };
+    }
     const binary = await findChromium();
     if (!binary) {
       return {
@@ -224,6 +257,9 @@ server.tool(
     url: z.string().url().describe("The URL to navigate to."),
   },
   async ({ url }) => {
+    const { allowed, reason } = checkUrl(url);
+    if (!allowed) return { content: [{ type: "text", text: `❌ Blocked: ${reason}` }], isError: true };
+
     const binary = await findChromium();
     if (!binary) {
       return {

@@ -17,12 +17,32 @@
   ],
   "license": "ISC",
   "keywords": ["chromium", "browser", "launch"],
+  "user_config": {
+    "url_filter_mode": {
+      "type": "string",
+      "title": "URL Filter Mode",
+      "description": "allowlist — only open URLs matching the patterns. blocklist — open everything except matched URLs.",
+      "default": "blocklist",
+      "required": false
+    },
+    "url_patterns": {
+      "type": "string",
+      "title": "URL Patterns",
+      "description": "Comma-separated patterns to allow or block (e.g. https://example.com/*,https://*.google.com/*). Leave empty to apply no filter.",
+      "default": "",
+      "required": false
+    }
+  },
   "server": {
     "type": "node",
     "entry_point": "dist/index.js",
     "mcp_config": {
       "command": "node",
-      "args": ["${__dirname}/dist/index.js"]
+      "args": ["${__dirname}/dist/index.js"],
+      "env": {
+        "URL_FILTER_MODE": "${user_config.url_filter_mode}",
+        "URL_PATTERNS": "${user_config.url_patterns}"
+      }
     }
   },
   "tools": [
