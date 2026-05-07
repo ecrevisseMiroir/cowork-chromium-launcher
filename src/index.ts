@@ -1,0 +1,235 @@
+#!/usr/bin/env node
+/**
+ * Chromium MCP Server
+ * Exposes tools to launch and control Chromium on the local machine.
+ * Transport: stdio
+ */
+
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { z } from "zod";
+import { spawn, exec } from "child_process";
+import { promisify } from "util";
+
+const execAsync = promisify(exec);
+
+// ── Resolve the Chromium/Chrome binary ──────────────────────────────────────
+const CHROMIUM_CANDIDATES = [
+  "chromium",
+  "chromium-browser",
+  "google-chrome",
+  "google-chrome-stable",
+  "/usr/bin/chromium",
+  "/usr/bin/chromium-browser",
+  "/usr/bin/google-chrome",
+  // macOS
+  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+  "/Applications/Chromium.app/Contents/MacOS/Chromium",
+];
+
+const FLATPAK_CANDIDATES = [
+  "org.chromium.Chromium",
+  "com.google.Chrome",
+];
+
+type BinaryEntry =
+  | { type: "direct"; path: string }
+  | { type: "flatpak"; appId: string };
+
+async function findChromium(): Promise<BinaryEntry | null> {
+  for (const candidate of CHROMIUM_CANDIDATES) {
+    try {
+      await execAsync(`which "${candidate}" 2>/dev/null || test -f "${candidate}"`);
+      return { type: "direct", path: candidate };
+    } catch {
+      // try next
+    }
+  }
+  for (const appId of FLATPAK_CANDIDATES) {
+    try {
+      await execAsync(`flatpak info "${appId}" 2>/dev/null`);
+      return { type: "flatpak", appId };
+    } catch {
+      // try next
+    }
+  }
+  return null;
+}
+
+function spawnChromium(binary: BinaryEntry, args: string[]) {
+  if (binary.type === "flatpak") {
+    return spawn("flatpak", ["run", binary.appId, ...args], {
+      detached: true,
+      stdio: "ignore",
+    });
+  }
+  return spawn(binary.path, args, { detached: true, stdio: "ignore" });
+}
+
+function binaryLabel(binary: BinaryEntry): string {
+  return binary.type === "flatpak"
+    ? `flatpak run ${binary.appId}`
+    : binary.path;
+}
+
+// ── MCP Server ───────────────────────────────────────────────────────────────
+const server = new McpServer({
+  name: "chromium-mcp",
+  version: "1.0.0",
+});
+
+// ── Tool: launch_chromium ────────────────────────────────────────────────────
+server.tool(
+  "launch_chromium",
+  "Launch Chromium (or Google Chrome) on the local machine, optionally opening a URL.",
+  {
+    url: z
+      .string()
+      .url()
+      .optional()
+      .describe("URL to open. Defaults to the browser's new-tab page."),
+    incognito: z
+      .boolean()
+      .optional()
+      .default(false)
+      .describe("Open in incognito / guest mode."),
+    new_window: z
+      .boolean()
+      .optional()
+      .default(false)
+      .describe("Force a new browser window even if one is already open."),
+    extra_args: z
+      .array(z.string())
+      .optional()
+      .default([])
+      .describe(
+        "Additional CLI flags to pass to Chromium, e.g. ['--kiosk', '--disable-gpu']."
+      ),
+  },
+  async ({ url, incognito, new_window, extra_args }) => {
+    const binary = await findChromium();
+    if (!binary) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: "❌ Could not find a Chromium or Chrome binary on this machine. " +
+              "Install chromium-browser or google-chrome and make sure it is on PATH.",
+          },
+        ],
+        isError: true,
+      };
+    }
+
+    const args: string[] = [];
+    if (incognito) args.push("--incognito");
+    if (new_window) args.push("--new-window");
+    args.push(...(extra_args ?? []));
+    if (url) args.push(url);
+
+    try {
+      const child = spawnChromium(binary, args);
+      child.unref();
+
+      return {
+        content: [
+          {
+            type: "text",
+            text:
+              `✅ Launched Chromium (pid ${child.pid}).\n` +
+              `Binary : ${binaryLabel(binary)}\n` +
+              `Args   : ${args.join(" ") || "(none)"}`,
+          },
+        ],
+      };
+    } catch (err) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `❌ Failed to launch Chromium: ${(err as Error).message}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+  }
+);
+
+// ── Tool: open_url ────────────────────────────────────────────────────────────
+server.tool(
+  "open_url",
+  "Open a URL in an already-running Chromium instance (or launch one if needed).",
+  {
+    url: z.string().url().describe("The URL to navigate to."),
+  },
+  async ({ url }) => {
+    const binary = await findChromium();
+    if (!binary) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: "❌ Could not find Chromium on this machine.",
+          },
+        ],
+        isError: true,
+      };
+    }
+
+    try {
+      const child = spawnChromium(binary, [url]);
+      child.unref();
+      return {
+        content: [{ type: "text", text: `✅ Opening ${url} in Chromium.` }],
+      };
+    } catch (err) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `❌ Error: ${(err as Error).message}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+  }
+);
+
+// ── Tool: detect_chromium ─────────────────────────────────────────────────────
+server.tool(
+  "detect_chromium",
+  "Check whether Chromium or Chrome is installed and return the resolved binary path.",
+  {},
+  async () => {
+    const binary = await findChromium();
+    if (binary) {
+      return {
+        content: [{ type: "text", text: `✅ Found Chromium: ${binaryLabel(binary)}` }],
+      };
+    }
+    return {
+      content: [
+        {
+          type: "text",
+          text: "❌ No Chromium/Chrome binary found. Install chromium-browser or google-chrome.",
+        },
+      ],
+      isError: true,
+    };
+  }
+);
+
+// ── Start ─────────────────────────────────────────────────────────────────────
+async function main() {
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+  // Log to stderr so it doesn't pollute the MCP stdio stream
+  console.error("chromium-mcp server running on stdio");
+}
+
+main().catch((err) => {
+  console.error("Fatal error:", err);
+  process.exit(1);
+});
